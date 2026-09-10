@@ -1,0 +1,39 @@
+sources:
+  bigtable-source:
+    kind: bigtable
+    project: panliuyang-ramp-up-project-01
+    instance: operations-db
+
+tools:
+  get_cashier_realtime_metrics:
+    kind: bigtable-sql
+    source: bigtable-source
+    description: |
+      Query live 1-hour rolling metrics, audit status flags, transaction counts, manual override counts, and promo rates for a cashier from Cloud Bigtable.
+      Accepts a cashier row key prefix, such as 'STORE_048#CASH_1190' or 'STORE_001#CASH_1001'.
+      Returns audit status, 1-hour transaction count, 1-hour manual override count, 1-hour promo rate, 1-hour total discount, 1-hour average discount percentage, risk score, and calculated live override rate.
+    statement: |
+      SELECT
+        CAST(_key AS STRING) as row_key,
+        CAST(flags['audit_status'] AS STRING) as audit_status,
+        CAST(stats['last_event_ts'] AS STRING) as last_event_ts,
+        TO_FLOAT64(stats['cashier_1h_avg_discount_pct']) as avg_discount_pct,
+        TO_INT64(stats['cashier_1h_manual_override_count']) as manual_override_count,
+        TO_INT64(stats['cashier_1h_promo_count']) as promo_count,
+        TO_FLOAT64(stats['cashier_1h_promo_rate']) as promo_rate,
+        TO_FLOAT64(stats['cashier_1h_total_discount_usd']) as total_discount_usd,
+        TO_INT64(stats['cashier_1h_txn_count']) as txn_count,
+        TO_FLOAT64(stats['risk_score']) as risk_score,
+        CASE
+          WHEN TO_INT64(stats['cashier_1h_txn_count']) > 0
+          THEN ROUND(CAST(TO_INT64(stats['cashier_1h_manual_override_count']) AS FLOAT64) / CAST(TO_INT64(stats['cashier_1h_txn_count']) AS FLOAT64), 4)
+          ELSE 0.0
+        END as live_override_rate
+      FROM cashier_realtime_alerts
+      WHERE CAST(_key AS STRING) LIKE CONCAT(@prefix, '%')
+      ORDER BY _key ASC
+      LIMIT 1;
+    parameters:
+      - name: prefix
+        type: string
+        description: "Row key prefix for the cashier, e.g. 'STORE_048#CASH_1190'"
