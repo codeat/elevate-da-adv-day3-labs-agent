@@ -75,7 +75,8 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
                     bigquery.ScalarQueryParameter("user_query", "STRING", query)
-                ]
+                ],
+                maximum_bytes_billed=1024 * 1024 * 1024,  # 1 GB Query Cost & Resource Guardrail
             )
             results = list(client.query(vector_sql, job_config=job_config).result())
 
@@ -132,7 +133,8 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
                 query_parameters=[
                     bigquery.ScalarQueryParameter("search_token", "STRING", f"`{search_token}`"),
                     bigquery.ScalarQueryParameter("raw_token", "STRING", search_token),
-                ]
+                ],
+                maximum_bytes_billed=1024 * 1024 * 1024,  # 1 GB Query Cost & Resource Guardrail
             )
             search_results = list(client.query(search_sql, job_config=search_config).result())
 
