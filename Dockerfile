@@ -32,7 +32,16 @@ WORKDIR /code
 
 # Copy the resolution inputs first so the dependency layer stays cached across
 # application-code edits.
-COPY ./pyproject.toml ./README.md ./uv.lock* ./
+#
+# README.md is deliberately NOT copied. `.dockerignore` excludes `*.md` (docs do
+# not belong in a runtime image) and `pyproject.toml` declares no `readme`
+# field, so the build backend never reads it. Copying it anyway is what broke
+# reasoning engine 3775755365375803392:
+#   COPY failed: file not found in build context or excluded by .dockerignore:
+#   stat README.md: file does not exist
+# If a `readme = "README.md"` field is ever added to pyproject.toml, add
+# `!README.md` to .dockerignore and restore it here in the same change.
+COPY ./pyproject.toml ./uv.lock* ./
 COPY ./app ./app
 
 # --frozen: fail loudly if uv.lock has drifted from pyproject.toml rather than
