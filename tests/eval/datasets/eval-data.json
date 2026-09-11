@@ -1,0 +1,72 @@
+{
+  "eval_set_id": "cymbal_functional_eval_v1",
+  "name": "Cymbal Operations Functional Evaluation Suite",
+  "description": "Multi-scenario benchmark evaluating POS troubleshooting RAG, BigQuery enterprise inventory analytics, and Cloud Bigtable cashier telemetry.",
+  "eval_cases": [
+    {
+      "eval_case_id": "func_rag_pos_clover_timeout",
+      "description": "Field recovery protocol for Clover Station Solo ERR-CLV-EMV-TIMEOUT payment reader error.",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "What is the immediate field recovery protocol when a Clover Station Solo terminal shows ERR-CLV-EMV-TIMEOUT, and what is the maximum allowed offline duration?"
+          }
+        ]
+      },
+      "expected_tool_use": [
+        "pos_troubleshooting_rag_tool"
+      ],
+      "context": "Clover Station Solo Service Guide: ERR-CLV-EMV-TIMEOUT indicates payment reader communication drop. Step 1: Reboot base unit. Step 2: Reseat USB-C hub. Maximum Offline Duration: 24 Consecutive Hours."
+    },
+    {
+      "eval_case_id": "func_dual_cashier_baseline_comparison",
+      "description": "Concurrent dispatch: 1-hour live Bigtable stream vs BigQuery 7-day historical baseline for Cashier 1190.",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "What is Cashier CASH_1190 live 1-hour override rate right now compared to their 7-day historical baseline in Store 048?"
+          }
+        ]
+      },
+      "expected_tool_use": [
+        "read_cashier_realtime_alerts",
+        "cymbal_analytics_tool"
+      ],
+      "context": "Bigtable live override rate: 88.46% (AUDIT_REQUIRED). BigQuery 7-day historical baseline: 4.12% across 85 transactions."
+    },
+    {
+      "eval_case_id": "func_inventory_stockout_cover_hours",
+      "description": "Relational query across gold inventory reconciliation ledger for critical stockout risks.",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "List products in Store 001 where Estimated Inventory Cover Hours is below 24 hours."
+          }
+        ]
+      },
+      "expected_tool_use": [
+        "cymbal_analytics_tool"
+      ],
+      "context": "Identified 3 SKUs with Cover Hours < 24h: Organic Whole Milk (8.2h), Artisan Sourdough (14.5h), Honeycrisp Apples (18.1h)."
+    },
+    {
+      "eval_case_id": "func_cross_cloud_promo_abuse_audit",
+      "description": "Sequential multi-turn audit: rank top abuse offenders in BigQuery and retrieve S3 checkout logs.",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Identify the cashier with the highest promotion abuse alerts in the last 7 days and inspect their federated AWS S3 transaction history."
+          }
+        ]
+      },
+      "expected_tool_use": [
+        "cymbal_analytics_tool"
+      ],
+      "context": "Cashier CASH_1164 flagged with 14 promo abuse anomalies in pos_anomaly_alerts. Cross-cloud federated query on silver_pos_transactions retrieved 14 manual discount overrides."
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+eval_config:
+  metrics:
+    - name: tool_use_quality
+      threshold: 0.80
+      weight: 0.50
+      description: "Evaluates the correctness of selected tool calls, arguments, and execution sequences against expected ground truth."
+    - name: grounding
+      threshold: 0.80
+      weight: 0.50
+      description: "Evaluates the factual consistency, lack of hallucination, and fidelity of responses strictly based on retrieved tool outputs."
+  quality_gate:
+    min_overall_score: 4.0
+    scale: 5.0
+    status: "PASS_THRESHOLD_MET"
