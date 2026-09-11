@@ -1,10 +1,24 @@
-"""Root Coordinator Agent for Cymbal Retail Operations."""
+"""Root Coordinator Agent for Cymbal Retail Operations.
+
+Hub-and-spoke orchestrator binding three decoupled analytical gateways:
+    * ``cymbal_analytics_tool``        - BigQuery Conversational Data Agent (NL2SQL)
+    * ``pos_troubleshooting_rag_tool`` - BigQuery Vector + Full-Text hybrid RAG
+    * Bigtable MCP toolset             - Cloud Run MCP real-time telemetry
+
+The model identifier and every environment-specific property are resolved from
+:mod:`app.config`; nothing is hardcoded in this module.
+"""
+
+from __future__ import annotations
 
 import logging
+
 from google.adk.agents.llm_agent import Agent
+
+from app import config
 from app.tools.analytics_tool import cymbal_analytics_tool
-from app.tools.rag_tool import pos_troubleshooting_rag_tool
 from app.tools.bigtable_tool import get_bigtable_mcp_toolset
+from app.tools.rag_tool import pos_troubleshooting_rag_tool
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +39,8 @@ Your primary mission is to coordinate investigations, analytics, and operational
   - Whenever the inquiry mentions hardware errors (e.g. `ERR-PAY-4001`, `ERR-DN-PRNT-24V`), terminal reader freezes, paper jams, or hardware maintenance:
   - IMMEDIATELY invoke `pos_troubleshooting_rag_tool(query=...)`.
   - Provide the exact step-by-step field recovery protocol and include the clickable certified PDF documentation link.
-  - If the query is out of scope (e.g. automotive repair like Ford F-150), deliver the returned safety warning string directly.
+  - If the tool returns the certified out-of-scope decline contract (e.g. automotive repair like Ford F-150),
+    relay that string VERBATIM. Do NOT paraphrase, append speculation, or attempt to answer from parametric memory.
 - **Enterprise Relational & Inventory Analytics**:
   - Whenever the inquiry asks for stockout risks, cover hours remaining, on-hand inventory, net revenue, or warranty policy claims:
   - IMMEDIATELY invoke `cymbal_analytics_tool(query=...)`.
@@ -64,8 +79,11 @@ Your primary mission is to coordinate investigations, analytics, and operational
 
 mcp_toolset = get_bigtable_mcp_toolset()
 
+MODEL_NAME = config.get_model_name()
+logger.info("Instantiating cymbal_operations_agent with model=%s", MODEL_NAME)
+
 cymbal_operations_agent = Agent(
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     name="cymbal_operations_agent",
     description="Root Coordinator Agent for Cymbal Retail Store Operations, Inventory & Hardware Diagnostics.",
     instruction=SYSTEM_INSTRUCTION,

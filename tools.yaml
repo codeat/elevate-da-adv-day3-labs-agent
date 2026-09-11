@@ -1,8 +1,14 @@
+# Cloud Bigtable MCP Toolbox configuration.
+#
+# PORTABILITY CONTRACT: no environment-specific identifier is committed here.
+# `${PROJECT_ID}` / `${BIGTABLE_INSTANCE}` are substituted at deploy time by
+# `make mcp-deploy` (see Makefile) before the manifest is pushed to Secret
+# Manager, so the same file promotes cleanly across dev / staging / prod.
 sources:
   bigtable-source:
     kind: bigtable
-    project: panliuyang-ramp-up-project-01
-    instance: operations-db
+    project: ${PROJECT_ID}
+    instance: ${BIGTABLE_INSTANCE}
 
 tools:
   get_cashier_realtime_metrics:

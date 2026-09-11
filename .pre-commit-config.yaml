@@ -1,0 +1,30 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: detect-private-key
+
+  - repo: local
+    hooks:
+      - id: no-hardcoded-environment
+        name: Block hardcoded GCP project ids / Cloud Run endpoints
+        entry: python -m pytest tests/unit/test_no_hardcoded_environment.py -q
+        language: system
+        pass_filenames: false
+
+      - id: response-contracts
+        name: Verify data & error response contracts
+        entry: python -m pytest tests/unit/test_contracts.py -q
+        language: system
+        pass_filenames: false

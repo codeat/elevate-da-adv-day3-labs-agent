@@ -1,20 +1,50 @@
-"""Analytics Tool wrapping BigQuery Conversational Data Agent."""
+"""Analytics tool wrapping the BigQuery Conversational Data Agent.
 
-import json
+All environment-specific values (project, location, data agent id, endpoint)
+are resolved from :mod:`app.config`. Failure paths emit the sanitized contract
+defined in :mod:`app.contracts`; raw exceptions and HTTP bodies are logged
+server-side only (Blueprint Section 4.3).
+"""
+
+from __future__ import annotations
+
 import logging
-import os
 import time
+
 import google.auth
 import google.auth.transport.requests
 import requests
 
+from app import config
+from app.contracts import (
+    ANALYTICS_EMPTY_RESULT_RESPONSE,
+    ANALYTICS_SERVICE_UNAVAILABLE_RESPONSE,
+)
+
 logger = logging.getLogger(__name__)
 
-PROJECT_ID = os.environ.get("PROJECT_ID", "panliuyang-ramp-up-project-01")
-LOCATION = os.environ.get("LOCATION", "global")
-DATA_AGENT_ID = os.environ.get("DATA_AGENT_ID", "cymbal-retail-analytics-agent")
-DATA_AGENT_NAME = f"projects/{PROJECT_ID}/locations/{LOCATION}/dataAgents/{DATA_AGENT_ID}"
-CHAT_URL = f"https://geminidataanalytics.googleapis.com/v1/projects/{PROJECT_ID}/locations/{LOCATION}:chat"
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+REQUEST_TIMEOUT_SECONDS = 90
+
+# Intermediate engine progress chatter that must not reach the transcript.
+_ENGINE_LOG_PREFIXES = (
+    "Analyzing context",
+    "Context retrieved",
+    "Retrieved context",
+    "Running a query",
+    "Query execution completed",
+    "Query returned",
+)
+
+
+def _render_markdown_table(headers: list[str], rows: list[list], limit: int = 20) -> str:
+    header_line = "| " + " | ".join(headers) + " |"
+    sep_line = "| " + " | ".join(["---"] * len(headers)) + " |"
+    body = [
+        "| " + " | ".join(str(v) if v is not None else "NULL" for v in row) + " |"
+        for row in rows[:limit]
+    ]
+    return "\n".join([header_line, sep_line] + body)
 
 
 def cymbal_analytics_tool(query: str) -> str:
@@ -29,103 +59,109 @@ def cymbal_analytics_tool(query: str) -> str:
 
     Args:
         query: The natural language question to ask the Data Agent. Preserve business terms
-               (such as 'Estimated Cover Hours', 'Total On-Hand Inventory', 'Net Transaction Revenue',
-               'Cashier Manual Override Rate') verbatim without stripping or summarization.
+            (such as 'Estimated Cover Hours', 'Total On-Hand Inventory', 'Net Transaction Revenue',
+            'Cashier Manual Override Rate') verbatim without stripping or summarization.
 
     Returns:
-        Structured string containing the generated SQL, retrieved tabular data, and analytical summary.
+        Structured string containing the generated SQL, retrieved tabular data, and
+        analytical summary. On persistent backend unavailability a sanitized fallback
+        notice is returned without internal diagnostics.
     """
-    max_retries = 3
-    last_error = None
+    project_id = config.get_project_id()
+    location = config.get_location()
+    chat_url = config.get_chat_url()
+    max_retries = config.get_max_retries()
+
+    payload = {
+        "parent": f"projects/{project_id}/locations/{location}",
+        "dataAgentContext": {"dataAgent": config.get_data_agent_name()},
+        "messages": [{"userMessage": {"text": query}}],
+    }
 
     for attempt in range(1, max_retries + 1):
         try:
-            creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-            auth_req = google.auth.transport.requests.Request()
-            creds.refresh(auth_req)
+            creds, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            creds.refresh(google.auth.transport.requests.Request())
 
             headers = {
                 "Authorization": f"Bearer {creds.token}",
                 "Content-Type": "application/json",
-                "X-Goog-User-Project": PROJECT_ID,
-            }
-            payload = {
-                "parent": f"projects/{PROJECT_ID}/locations/{LOCATION}",
-                "dataAgentContext": {
-                    "dataAgent": DATA_AGENT_NAME,
-                },
-                "messages": [
-                    {
-                        "userMessage": {
-                            "text": query,
-                        }
-                    }
-                ],
+                "X-Goog-User-Project": project_id,
             }
 
-            resp = requests.post(CHAT_URL, headers=headers, json=payload, timeout=90)
-            if resp.status_code == 200:
-                data = resp.json()
-                generated_sql = None
-                data_rows = []
-                data_headers = []
-                final_text = []
+            resp = requests.post(
+                chat_url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT_SECONDS
+            )
 
-                for item in data:
-                    if "systemMessage" in item:
-                        sm = item["systemMessage"]
-                        if "generatedSql" in sm:
-                            generated_sql = sm["generatedSql"].get("query")
-                        if "data" in sm:
-                            schema = sm["data"].get("schema", {})
-                            data_headers = [f["name"] for f in schema.get("fields", [])]
-                            data_rows = sm["data"].get("rows", [])
-                        if "text" in sm:
-                            parts = sm["text"].get("parts", [])
-                            for part in parts:
-                                if isinstance(part, str):
-                                    # Filter out intermediate engine logging
-                                    if not any(part.startswith(p) for p in [
-                                        "Analyzing context",
-                                        "Context retrieved",
-                                        "Retrieved context",
-                                        "Running a query",
-                                        "Query execution completed",
-                                        "Query returned",
-                                    ]):
-                                        final_text.append(part)
-
-                output_parts = []
-                if generated_sql:
-                    output_parts.append(f"### Generated GoogleSQL\n```sql\n{generated_sql.strip()}\n```")
-                if data_rows and data_headers:
-                    output_parts.append(f"### Data Output ({len(data_rows)} rows)")
-                    header_line = "| " + " | ".join(data_headers) + " |"
-                    sep_line = "| " + " | ".join(["---"] * len(data_headers)) + " |"
-                    rows_lines = []
-                    for r in data_rows[:20]:
-                        row_vals = [str(v) if v is not None else "NULL" for v in r]
-                        rows_lines.append("| " + " | ".join(row_vals) + " |")
-                    output_parts.append("\n".join([header_line, sep_line] + rows_lines))
-                if final_text:
-                    output_parts.append("### Summary Analysis\n" + "\n\n".join(final_text))
-
-                if not output_parts:
-                    return f"Data Agent completed the query but returned no content. Response: {json.dumps(data)}"
-                return "\n\n".join(output_parts)
-
-            elif resp.status_code in (429, 500, 502, 503, 504):
-                time.sleep(2 ** attempt)
+            if resp.status_code in RETRYABLE_STATUS:
+                logger.warning(
+                    "Data Agent returned retryable status %s (attempt %d/%d).",
+                    resp.status_code,
+                    attempt,
+                    max_retries,
+                )
+                if attempt < max_retries:
+                    time.sleep(2**attempt)
                 continue
-            else:
-                last_error = f"HTTP {resp.status_code}: {resp.text}"
-                time.sleep(2 ** attempt)
-        except Exception as e:
-            last_error = str(e)
-            time.sleep(2 ** attempt)
 
-    return (
-        f"Store data service is currently unreachable. "
-        f"Please verify network connectivity or check if the BigQuery Conversational Data Agent is active. "
-        f"(Diagnostics: {last_error})"
-    )
+            if resp.status_code != 200:
+                # Body may embed internal resource names -> log only.
+                logger.error(
+                    "Data Agent call failed with HTTP %s. Body: %s",
+                    resp.status_code,
+                    resp.text,
+                )
+                if attempt < max_retries:
+                    time.sleep(2**attempt)
+                continue
+
+            data = resp.json()
+            generated_sql: str | None = None
+            data_rows: list = []
+            data_headers: list[str] = []
+            final_text: list[str] = []
+
+            for item in data:
+                system_message = item.get("systemMessage")
+                if not system_message:
+                    continue
+                if "generatedSql" in system_message:
+                    generated_sql = system_message["generatedSql"].get("query")
+                if "data" in system_message:
+                    schema = system_message["data"].get("schema", {})
+                    data_headers = [f["name"] for f in schema.get("fields", [])]
+                    data_rows = system_message["data"].get("rows", [])
+                if "text" in system_message:
+                    for part in system_message["text"].get("parts", []):
+                        if isinstance(part, str) and not part.startswith(_ENGINE_LOG_PREFIXES):
+                            final_text.append(part)
+
+            output_parts: list[str] = []
+            if generated_sql:
+                output_parts.append(
+                    f"### Generated GoogleSQL\n```sql\n{generated_sql.strip()}\n```"
+                )
+            if data_rows and data_headers:
+                output_parts.append(f"### Data Output ({len(data_rows)} rows)")
+                output_parts.append(_render_markdown_table(data_headers, data_rows))
+            if final_text:
+                output_parts.append("### Summary Analysis\n" + "\n\n".join(final_text))
+
+            if not output_parts:
+                logger.info("Data Agent returned an empty payload for query: %s", query)
+                return ANALYTICS_EMPTY_RESULT_RESPONSE
+            return "\n\n".join(output_parts)
+
+        except Exception:
+            # Blueprint Section 4.3: never surface stack traces to the caller.
+            logger.exception(
+                "Analytics tool attempt %d/%d raised an unexpected error.",
+                attempt,
+                max_retries,
+            )
+            if attempt < max_retries:
+                time.sleep(2**attempt)
+
+    return ANALYTICS_SERVICE_UNAVAILABLE_RESPONSE

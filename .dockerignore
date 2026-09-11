@@ -1,0 +1,15 @@
+.venv/
+.git/
+__pycache__/
+*.pyc
+.env
+app/.env
+app/.adk/
+.adk/
+build/
+tests/
+docs/
+deploy/
+*.md
+.pytest_cache/
+.ruff_cache/

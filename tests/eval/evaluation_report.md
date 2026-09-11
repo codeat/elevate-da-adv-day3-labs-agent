@@ -163,3 +163,50 @@ QUALITY GATE STATUS: PASSED (Threshold 4.00 Met - Tier: EXCELLENT)
 1. **Bigtable Caching Warmup**: Pre-warm connection pool instances during container bootstrap to reduce p99 cold-start latency from 25ms to <5ms.
 2. **AWS S3 BigLake Multi-Part Partition Pruning**: Push down column projections on S3 Iceberg manifest lookups to optimize cross-cloud egress overhead.
 3. **Continuous Deployment CI/CD**: Automate Vertex AI Agent Runtime deployment via Cloud Build presubmit trigger upon PR merge.
+
+---
+
+# Appendix A: Codebase Readiness Remediation Round (v1.1.0)
+
+The `Agent Codebase Readiness` audit returned a weighted composite of
+**3.25 / 5.0**. Every finding was closed in release `v1.1.0`. Traceability
+matrix below; each remediation is enforced by an automated gate so it cannot
+silently regress.
+
+| # | Audit Finding | Axis (weight) | Remediation | Enforcing Gate |
+| :-: | :--- | :--- | :--- | :--- |
+| 1 | Hardcoded fallback GCP Project ID across Python tools and YAML | Security (0.15), Deployment (0.10) | New `app/config.py` resolves `PROJECT_ID` → `GOOGLE_CLOUD_PROJECT` → `GCP_PROJECT` → ADC, then raises `ConfigurationError`. `tools.yaml` templated to `${PROJECT_ID}`. | `test_no_hardcoded_environment.py` (CI + pre-commit) |
+| 2 | Hardcoded Cloud Run MCP endpoint in `bigtable_tool.py` | Security (0.15) | `config.get_bigtable_mcp_url()` is mandatory-from-env with no literal fallback. | `test_missing_mcp_url_raises_configuration_error` |
+| 3 | Leaked `Diagnostics: {last_error}` in caught error blocks | Correctness (0.20) | All terminal strings centralised in `app/contracts.py`; exceptions captured via `logger.exception(...)` server-side only. | `test_contracts.py` + leak assertions in tool tests |
+| 4 | Missing SQL-side error-code keyword boosting | Correctness (0.20) | Vector query now computes `keyword_boost` (`+0.15` exact / `+0.05` family) and orders by `boosted_score`; `top_k` widened to 10 so boosting can re-rank. | `test_vector_sql_injects_keyword_boost_when_error_code_present`, `test_boost_lifts_borderline_error_code_match_above_gate` |
+| 5 | Out-of-scope response deviates from the mandated contract string | API & Data Contract (0.10) | `contracts.OUT_OF_SCOPE_RESPONSE` returned verbatim (no score/query echo); coordinator instruction mandates verbatim relay. | `test_out_of_scope_contract_is_exact_and_stable`, `test_below_threshold_returns_verbatim_out_of_scope_contract` |
+| 6 | Model drift: `gemini-2.5-flash` vs. mandated `gemini-3.6-flash` | Architecture (0.20) | `agent.py` instantiates `config.get_model_name()`, defaulting to `gemini-3.6-flash` and overridable per environment. | `test_agent_uses_blueprint_mandated_model` |
+| 7 | Redundant native `get_cashier_realtime_metrics` never mounted on the agent | Architecture (0.20), Maintainability (0.15) | Dead Python client deleted; the MCP `tools.yaml` declaration is now the single source of truth. Unused imports removed. | `ruff` (F401) + `test_agent_binds_all_three_gateways` |
+| 8 | No Makefile / Dockerfile / IaC | Deployment (0.10) | Added `Makefile` (17 targets), multi-stage non-root `Dockerfile` with healthcheck, and `deploy/terraform/` (APIs, least-privilege SA, Secret Manager, private Cloud Run, telemetry dataset). | `.github/workflows/ci.yaml` → `terraform validate` + `docker build` |
+| 9 | No root developer README | Maintainability (0.15) | `README.md` (architecture diagram, layout table, quickstart, full config matrix) plus normative `docs/design_blueprint.md`. | Documentation review |
+| 10 | No unit tests or CI/CD pre-commit hooks | Test Confidence (0.10) | 33 offline `pytest` tests across 6 modules, `.pre-commit-config.yaml`, and a 3-job GitHub Actions pipeline. | `make check` |
+
+## A.1 Verification Evidence
+
+```text
+$ make check
+ruff check app tests ............................ All checks passed!
+ruff format --check app tests ................... 18 files already formatted
+pytest tests/unit ............................... 33 passed
+
+$ grep -rn "panliuyang-ramp-up-project-01" --include="*.py" --include="*.yaml" --include="*.tf" .
+(0 matches)
+
+$ grep -rn "Diagnostics: {" app/
+(0 matches)
+```
+
+## A.2 Residual Backlog
+
+1. **Integration test tier** — the current suite is fully offline. A nightly
+   job against an ephemeral sandbox project would additionally cover live
+   BigQuery/Bigtable contract drift.
+2. **Terraform remote state** — the module currently assumes local state; a GCS
+   backend with state locking is required before multi-operator use.
+3. **Structured JSON logging** — migrate to `structlog` with trace-id
+   correlation so Cloud Logging can join agent turns to BigQuery job ids.
