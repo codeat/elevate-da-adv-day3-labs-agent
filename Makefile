@@ -56,8 +56,12 @@ format: ## Auto-format the codebase
 	$(VENV)/bin/ruff check --fix app tests
 
 .PHONY: test
-test: ## Run the offline unit test suite
+test: ## Run the offline unit test suite (hermetic, no GCP calls)
 	$(VENV)/bin/pytest tests/unit -v
+
+.PHONY: test-integration
+test-integration: env-check ## Run the ONLINE contract tests against live GCP backends
+	RUN_INTEGRATION_TESTS=1 $(VENV)/bin/pytest tests/integration -v -m integration
 
 .PHONY: eval
 eval: env-check ## Run the ADK evaluation suite against the golden datasets

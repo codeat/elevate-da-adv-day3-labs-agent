@@ -13,9 +13,16 @@ gateways own their respective backends. Gateways never call each other.
 
 | Gateway | Transport | Backend |
 | :--- | :--- | :--- |
-| `cymbal_analytics_tool` | REST (`geminidataanalytics.googleapis.com`) | BigQuery `cymbal_gold`, `cymbal_governance`, AWS S3 BigLake |
+| `ask_data_agent` (ADK-native `DataAgentToolset`) | ADK first-party Data Agent integration | BigQuery `cymbal_gold`, `cymbal_governance`, AWS S3 BigLake |
+| `cymbal_analytics_tool` | REST (`geminidataanalytics.googleapis.com`) — **degraded fallback only** | same as above |
 | `pos_troubleshooting_rag_tool` | BigQuery client | `pos_manual_chunk_embeddings` (vector + full-text) |
 | Bigtable MCP toolset | MCP over SSE | Cloud Run Toolbox → Bigtable `operations-db` |
+
+The analytics gateway is bound through ADK's **native** `DataAgentToolset`
+(`google.adk.tools.data_agent`), filtered to the read-only `ask_data_agent`
+tool with `enable_data_agent_modification=False` and `max_query_result_rows=50`.
+Hand-rolled HTTP is retained purely as a degraded adapter for runtimes where the
+native toolset cannot be constructed; the native path is always preferred.
 
 ### 1.2 Model
 The coordinator runs `gemini-3.6-flash`, resolved via `MODEL_NAME`. No model
@@ -65,10 +72,7 @@ When `boosted_score < RAG_SIMILARITY_THRESHOLD` (default `0.70`) **and** the
 full-text `SEARCH()` fallback returns no row, the tool MUST return this string
 **verbatim**, with no interpolation, score echo, or query echo:
 
-> I could not find relevant information in the certified Cymbal Retail POS
-> hardware knowledge base to answer this question. This request appears to
-> fall outside the supported scope of store point-of-sale terminal
-> operations, maintenance, and troubleshooting.
+> I cannot find certified warranty or repair rules for this specific error in our technical repository.
 
 Implemented as `app.contracts.OUT_OF_SCOPE_RESPONSE`; asserted by
 `tests/unit/test_contracts.py::test_out_of_scope_contract_is_exact_and_stable`.
@@ -87,6 +91,21 @@ The coordinator system instruction requires relaying it verbatim.
 | `live_override_rate` | FLOAT64 | `manual_override_count / txn_count`, 4 dp. |
 
 Currency renders as `$X,XXX.XX`; rates render as `XX.XX%`.
+
+### 3.2 MCP Tool Naming Contract  *(normative)*
+Every tool published by the Cloud Run MCP Toolbox follows `read_<table>_sql`,
+which encodes the access mode (`read`), the backing Bigtable table, and the
+query dialect. Renaming a tool is a breaking contract change.
+
+| MCP tool | Backing table | Parameters | Purpose |
+| :--- | :--- | :--- | :--- |
+| `read_cashier_realtime_alerts_sql` | `cashier_realtime_alerts` | `prefix` | Live 1-hour rolling override rate, audit flag, risk score. |
+| `read_pos_transactions_enriched_sql` | `pos_transactions_enriched` | `prefix`, `row_limit` | Individual enriched checkout transactions behind an alert. |
+
+Both declarations live in `tools.yaml` (templated with `${PROJECT_ID}` /
+`${BIGTABLE_INSTANCE}`) and are asserted online by
+`tests/integration/test_live_backends.py::test_mcp_toolbox_publishes_the_contracted_tool_names`
+and offline by `tests/unit/test_agent_wiring.py`.
 
 ---
 
@@ -130,5 +149,16 @@ manifest lives in Secret Manager, never on disk in the image.
 | Infrastructure as Code | `deploy/terraform/` |
 | Continuous integration | `.github/workflows/ci.yaml` |
 | Local guardrails | `.pre-commit-config.yaml` |
-| Offline unit tests | `tests/unit/` |
+| Offline unit tests | `tests/unit/` (hermetic, default `pytest` target) |
+| Online integration tests | `tests/integration/` (opt-in via `RUN_INTEGRATION_TESTS=1`, `make test-integration`) |
 | Golden evaluation suite | `tests/eval/` |
+
+### 5.1 Test Strategy
+Two layers, deliberately separated so a developer without ADC still gets a
+green build:
+
+1. **Unit layer** — fully mocked, no socket and no credential resolution. Runs
+   on every push and in pre-commit.
+2. **Integration layer** — real BigQuery / Data Agent / Cloud Run MCP calls,
+   read-only and cost-bounded. Skipped unless `RUN_INTEGRATION_TESTS=1`; in CI
+   it runs as a keyless (Workload Identity Federation) `workflow_dispatch` job.

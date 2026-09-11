@@ -24,11 +24,18 @@ _SYNTHETIC_ENV = {
 for _key, _value in _SYNTHETIC_ENV.items():
     os.environ.setdefault(_key, _value)
 
-# The MCP transport must never open a socket during unit tests.
+# Neither the MCP transport nor the Data Agent gateway may open a socket or
+# resolve real credentials during unit tests.
 from unittest.mock import MagicMock, patch  # noqa: E402
+
+import google.auth.credentials  # noqa: E402
+
+_FAKE_ADC = MagicMock(spec=google.auth.credentials.Credentials)
 
 _MCP_PATCHERS = [
     patch("google.adk.tools.mcp_tool.mcp_toolset.McpToolset", MagicMock()),
+    patch("google.adk.tools.data_agent.DataAgentToolset", MagicMock()),
+    patch("google.auth.default", MagicMock(return_value=(_FAKE_ADC, "unit-test-project"))),
 ]
 for _patcher in _MCP_PATCHERS:
     _patcher.start()

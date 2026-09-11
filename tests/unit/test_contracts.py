@@ -24,11 +24,10 @@ ALL_CONTRACTS = [
 
 
 def test_out_of_scope_contract_is_exact_and_stable():
+    # Mandated verbatim by the system design document / readiness audit.
     assert contracts.OUT_OF_SCOPE_RESPONSE == (
-        "I could not find relevant information in the certified Cymbal Retail POS "
-        "hardware knowledge base to answer this question. This request appears to "
-        "fall outside the supported scope of store point-of-sale terminal "
-        "operations, maintenance, and troubleshooting."
+        "I cannot find certified warranty or repair rules for this specific "
+        "error in our technical repository."
     )
 
 

@@ -1,4 +1,9 @@
-"""Analytics gateway: sanitized failure paths and contract compliance."""
+"""Analytics gateway: sanitized failure paths and contract compliance.
+
+``google.auth`` and ``requests`` are imported lazily inside the degraded REST
+adapter, so the patch targets are the canonical module attributes rather than
+re-exported names on :mod:`app.tools.analytics_tool`.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ from app.tools import analytics_tool
 
 
 @patch("app.tools.analytics_tool.time.sleep", return_value=None)
-@patch("app.tools.analytics_tool.google.auth.default")
+@patch("google.auth.default")
 def test_auth_failure_returns_sanitized_notice(mock_auth, _sleep):
     mock_auth.side_effect = RuntimeError(
         "Permission denied on projects/acme-secret-tenant/locations/global"
@@ -24,8 +29,8 @@ def test_auth_failure_returns_sanitized_notice(mock_auth, _sleep):
 
 
 @patch("app.tools.analytics_tool.time.sleep", return_value=None)
-@patch("app.tools.analytics_tool.requests.post")
-@patch("app.tools.analytics_tool.google.auth.default")
+@patch("requests.post")
+@patch("google.auth.default")
 def test_http_error_body_is_never_echoed(mock_auth, mock_post, _sleep):
     mock_auth.return_value = (MagicMock(token="tok"), "unit-test-project")
     response = MagicMock()
@@ -39,8 +44,8 @@ def test_http_error_body_is_never_echoed(mock_auth, mock_post, _sleep):
     assert "403" not in result
 
 
-@patch("app.tools.analytics_tool.requests.post")
-@patch("app.tools.analytics_tool.google.auth.default")
+@patch("requests.post")
+@patch("google.auth.default")
 def test_empty_payload_returns_contract_string(mock_auth, mock_post):
     mock_auth.return_value = (MagicMock(token="tok"), "unit-test-project")
     response = MagicMock()
@@ -51,8 +56,8 @@ def test_empty_payload_returns_contract_string(mock_auth, mock_post):
     assert analytics_tool.cymbal_analytics_tool("q") == ANALYTICS_EMPTY_RESULT_RESPONSE
 
 
-@patch("app.tools.analytics_tool.requests.post")
-@patch("app.tools.analytics_tool.google.auth.default")
+@patch("requests.post")
+@patch("google.auth.default")
 def test_successful_response_renders_sql_and_table(mock_auth, mock_post):
     mock_auth.return_value = (MagicMock(token="tok"), "unit-test-project")
     response = MagicMock()

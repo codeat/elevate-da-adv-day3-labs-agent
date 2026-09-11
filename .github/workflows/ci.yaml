@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -54,3 +55,38 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build agent container image
         run: docker build -t cymbal-operations-agent:ci .
+
+  # Online contract tests. They only execute when the repository (or the
+  # dispatching operator) supplies a Workload Identity Federation provider, so
+  # forks and community PRs never see a red build for missing credentials.
+  integration-tests:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Authenticate to Google Cloud (keyless / WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Online contract tests
+        env:
+          RUN_INTEGRATION_TESTS: "1"
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          BIGTABLE_MCP_URL: ${{ secrets.BIGTABLE_MCP_URL }}
+        run: pytest tests/integration -v -m integration

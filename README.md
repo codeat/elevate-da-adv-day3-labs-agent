@@ -7,7 +7,7 @@ General Managers, Operations Leads, and Loss-Prevention Auditors.
 ```mermaid
 flowchart LR
     U["Store GM / Auditor"] --> C["cymbal_operations_agent<br/>(Coordinator - ADK)"]
-    C -->|NL2SQL| A["cymbal_analytics_tool<br/>BigQuery Conversational Data Agent"]
+    C -->|"NL2SQL (ADK-native ask_data_agent)"| A["DataAgentToolset<br/>BigQuery Conversational Data Agent"]
     C -->|Hybrid RAG| R["pos_troubleshooting_rag_tool<br/>BigQuery Vector + Full-Text"]
     C -->|MCP / SSE| M["Bigtable MCP Toolset<br/>Cloud Run Toolbox"]
     A --> BQ[("BigQuery cymbal_gold<br/>+ AWS S3 BigLake")]
@@ -24,11 +24,12 @@ flowchart LR
 | `app/agent.py` | Root coordinator: system instruction, intent routing, tool binding. |
 | `app/config.py` | **Single source of truth** for every environment-specific property. |
 | `app/contracts.py` | Canonical user-facing response strings (decline + sanitized fallbacks). |
-| `app/tools/analytics_tool.py` | BigQuery Conversational Data Agent gateway (NL2SQL). |
+| `app/tools/analytics_tool.py` | Analytics gateway: ADK-native `DataAgentToolset` (`ask_data_agent`) + degraded REST adapter. |
 | `app/tools/rag_tool.py` | Vector + full-text hybrid RAG with SQL-side error-code boosting. |
 | `app/tools/bigtable_tool.py` | MCP toolset factory for the Cloud Run Bigtable microservice. |
 | `tools.yaml` | MCP Toolbox manifest (templated — no tenant identifiers committed). |
-| `tests/unit/` | Offline pytest suite (portability, contract, logic, wiring gates). |
+| `tests/unit/` | Hermetic offline pytest suite (portability, contract, logic, wiring gates). |
+| `tests/integration/` | Online contract tests against live GCP backends (opt-in via `RUN_INTEGRATION_TESTS=1`). |
 | `tests/eval/` | ADK evaluation datasets, metric config, and evaluation report. |
 | `deploy/terraform/` | Infrastructure-as-Code: APIs, IAM, Secret Manager, Cloud Run. |
 | `Makefile` / `Dockerfile` | Reproducible setup, quality gates, container, and deployment. |
@@ -49,7 +50,7 @@ make tf-apply
 make mcp-deploy      # prints the Cloud Run URL -> set BIGTABLE_MCP_URL in app/.env
 
 # 4. Verify quality gates, then run the playground
-make check           # ruff lint + 33 offline unit tests
+make check           # ruff lint + 35 hermetic unit tests
 make run             # ADK web UI on http://localhost:8000
 ```
 
@@ -89,7 +90,8 @@ See [`docs/design_blueprint.md`](docs/design_blueprint.md) for the normative spe
 | Contract | Behaviour |
 | :--- | :--- |
 | **§2.2 Error-code boosting** | Exact fault-code matches receive a `+0.15` SQL-side score boost (`+0.05` for the code family) so a precise `ERR-PAY-4001` chunk outranks a merely semantically similar one. |
-| **§2.3 Out-of-scope decline** | Below the certified gate with no full-text match, the tool returns `contracts.OUT_OF_SCOPE_RESPONSE` **verbatim** — no score echo, no query echo, no parametric guessing. |
+| **§2.3 Out-of-scope decline** | Below the certified gate with no full-text match, the tool returns `contracts.OUT_OF_SCOPE_RESPONSE` **verbatim**: `I cannot find certified warranty or repair rules for this specific error in our technical repository.` — no score echo, no query echo, no parametric guessing. |
+| **§3.2 MCP tool naming** | The Toolbox publishes `read_cashier_realtime_alerts_sql` and `read_pos_transactions_enriched_sql`. Renaming either is a breaking contract change. |
 | **§4.1 Portability** | Zero hardcoded environment literals; enforced by a CI gate. |
 | **§4.3 Sanitized fallbacks** | Exceptions, HTTP bodies, hostnames, and tokens are logged server-side only. Callers receive a shielded operator-readable notice. |
 | **Cost guardrail** | Every BigQuery job is submitted with `maximum_bytes_billed`. |
@@ -98,11 +100,25 @@ See [`docs/design_blueprint.md`](docs/design_blueprint.md) for the normative spe
 
 ## Testing
 
+Two deliberately separated layers:
+
+| Layer | Command | Credentials | Runs in CI |
+| :--- | :--- | :--- | :--- |
+| Hermetic unit tests (35) | `make test` | none — sockets and ADC are mocked at import time | every push / PR |
+| Online contract tests | `make test-integration` | ADC + a provisioned project | `workflow_dispatch` job via keyless WIF |
+
 ```bash
-make test    # 33 offline unit tests, no cloud credentials required
-make eval    # ADK golden-dataset evaluation (requires a live project)
-make lint    # ruff lint + format check
+make test              # 35 hermetic unit tests, no cloud credentials required
+make test-integration  # live BigQuery / Data Agent / MCP Toolbox contract tests
+make eval              # ADK golden-dataset evaluation (requires a live project)
+make lint              # ruff lint + format check
 ```
+
+The integration layer is excluded from `testpaths` **and** additionally guarded
+by `RUN_INTEGRATION_TESTS`, so a developer or fork without credentials never
+sees a spurious red build. It asserts, read-only and cost-bounded: the RAG
+corpus schema and row count, live grounded retrieval, the verbatim decline
+contract, Data Agent resource reachability, and the MCP Toolbox tool manifest.
 
 CI (`.github/workflows/ci.yaml`) additionally runs `terraform fmt/validate` and
 a full container build on every pull request. Install the local guardrails with

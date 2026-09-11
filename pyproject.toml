@@ -1,13 +1,18 @@
 [project]
 name = "cymbal-operations-agent"
-version = "1.1.0"
+version = "1.2.0"
 description = "Cymbal Retail Operations & Analytics Coordinator Agent (ADK hub-and-spoke)"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
+# Only the hermetic unit layer runs by default. The online layer is invoked
+# explicitly via `make test-integration` (see tests/integration/conftest.py).
 testpaths = ["tests/unit"]
 pythonpath = ["."]
 addopts = "-q --strict-markers"
+markers = [
+    "integration: online test that requires live GCP backends and ADC.",
+]
 
 [tool.ruff]
 line-length = 100

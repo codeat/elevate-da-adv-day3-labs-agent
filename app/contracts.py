@@ -18,10 +18,8 @@ from __future__ import annotations
 # echo, no query echo) whenever the retrieval confidence falls below the
 # certified similarity threshold AND the full-text fallback yields no match.
 OUT_OF_SCOPE_RESPONSE: str = (
-    "I could not find relevant information in the certified Cymbal Retail POS "
-    "hardware knowledge base to answer this question. This request appears to "
-    "fall outside the supported scope of store point-of-sale terminal "
-    "operations, maintenance, and troubleshooting."
+    "I cannot find certified warranty or repair rules for this specific error "
+    "in our technical repository."
 )
 
 # ---------------------------------------------------------------------------

@@ -23,9 +23,21 @@ def test_agent_uses_blueprint_mandated_model():
     assert module.cymbal_operations_agent.model == "gemini-3.6-flash"
 
 
-def test_agent_binds_all_three_gateways():
+def test_agent_binds_every_declared_gateway():
     module = _load_agent()
-    assert len(module.cymbal_operations_agent.tools) == 3
+    # Native Data Agent toolset + REST fallback adapter + RAG + MCP toolbox.
+    assert len(module.cymbal_operations_agent.tools) == 4
+
+
+def test_agent_prefers_native_data_agent_toolset():
+    module = _load_agent()
+    assert module.data_agent_toolset is module.cymbal_operations_agent.tools[0]
+
+
+def test_system_instruction_advertises_mcp_contract_tool_names():
+    module = _load_agent()
+    assert "read_cashier_realtime_alerts_sql" in module.SYSTEM_INSTRUCTION
+    assert "read_pos_transactions_enriched_sql" in module.SYSTEM_INSTRUCTION
 
 
 def test_root_agent_alias_is_exported():

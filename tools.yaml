@@ -2,8 +2,11 @@
 #
 # PORTABILITY CONTRACT: no environment-specific identifier is committed here.
 # `${PROJECT_ID}` / `${BIGTABLE_INSTANCE}` are substituted at deploy time by
-# `make mcp-deploy` (see Makefile) before the manifest is pushed to Secret
-# Manager, so the same file promotes cleanly across dev / staging / prod.
+# `make mcp-config` before the manifest is pushed to Secret Manager, so the same
+# file promotes cleanly across dev / staging / prod.
+#
+# NAMING CONTRACT (Blueprint Section 3.2): tool identifiers follow
+# `read_<table>_sql`, mirroring the underlying Bigtable table they project.
 sources:
   bigtable-source:
     kind: bigtable
@@ -11,13 +14,17 @@ sources:
     instance: ${BIGTABLE_INSTANCE}
 
 tools:
-  get_cashier_realtime_metrics:
+  # -------------------------------------------------------------------------
+  # Real-time cashier alert stream (table: cashier_realtime_alerts)
+  # -------------------------------------------------------------------------
+  read_cashier_realtime_alerts_sql:
     kind: bigtable-sql
     source: bigtable-source
     description: |
       Query live 1-hour rolling metrics, audit status flags, transaction counts, manual override counts, and promo rates for a cashier from Cloud Bigtable.
       Accepts a cashier row key prefix, such as 'STORE_048#CASH_1190' or 'STORE_001#CASH_1001'.
       Returns audit status, 1-hour transaction count, 1-hour manual override count, 1-hour promo rate, 1-hour total discount, 1-hour average discount percentage, risk score, and calculated live override rate.
+      Use this for live intraday risk evaluation and for comparison against the 7-day historical baseline retrieved from BigQuery.
     statement: |
       SELECT
         CAST(_key AS STRING) as row_key,
@@ -43,3 +50,42 @@ tools:
       - name: prefix
         type: string
         description: "Row key prefix for the cashier, e.g. 'STORE_048#CASH_1190'"
+
+  # -------------------------------------------------------------------------
+  # Enriched POS transaction stream (table: pos_transactions_enriched)
+  # -------------------------------------------------------------------------
+  read_pos_transactions_enriched_sql:
+    kind: bigtable-sql
+    source: bigtable-source
+    description: |
+      Query enriched real-time POS checkout transactions streamed into Cloud Bigtable, including line item totals, applied discounts, promo codes, manual override flags, tender type, and the Vertex AI anomaly inference verdict.
+      Accepts a row key prefix such as 'STORE_048#CASH_1190' (all recent transactions for a cashier), 'STORE_048#' (all recent transactions for a store), or a full transaction key, plus a row limit.
+      Use this to inspect the individual transactions behind an elevated override rate or promo abuse alert, and to reconcile live checkout activity against the BigQuery gold ledger.
+    statement: |
+      SELECT
+        CAST(_key AS STRING) as row_key,
+        CAST(txn['transaction_id'] AS STRING) as transaction_id,
+        CAST(txn['store_id'] AS STRING) as store_id,
+        CAST(txn['cashier_id'] AS STRING) as cashier_id,
+        CAST(txn['event_ts'] AS STRING) as event_ts,
+        CAST(txn['tender_type'] AS STRING) as tender_type,
+        CAST(txn['promo_code'] AS STRING) as promo_code,
+        TO_INT64(txn['item_count']) as item_count,
+        TO_FLOAT64(txn['gross_amount_usd']) as gross_amount_usd,
+        TO_FLOAT64(txn['discount_amount_usd']) as discount_amount_usd,
+        TO_FLOAT64(txn['net_amount_usd']) as net_amount_usd,
+        TO_FLOAT64(txn['discount_pct']) as discount_pct,
+        CAST(flags['manual_override'] AS STRING) as manual_override,
+        CAST(flags['anomaly_verdict'] AS STRING) as anomaly_verdict,
+        TO_FLOAT64(flags['anomaly_score']) as anomaly_score
+      FROM pos_transactions_enriched
+      WHERE CAST(_key AS STRING) LIKE CONCAT(@prefix, '%')
+      ORDER BY _key DESC
+      LIMIT @row_limit;
+    parameters:
+      - name: prefix
+        type: string
+        description: "Row key prefix, e.g. 'STORE_048#CASH_1190' for a cashier or 'STORE_048#' for a whole store"
+      - name: row_limit
+        type: integer
+        description: "Maximum number of transactions to return (recommended 10-50)"
