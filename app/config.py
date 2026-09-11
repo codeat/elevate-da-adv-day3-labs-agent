@@ -159,3 +159,38 @@ def get_max_retries() -> int:
         return max(1, int(raw)) if raw else 3
     except ValueError:
         return 3
+
+
+# ---------------------------------------------------------------------------
+# Observability (BigQuery Agent Analytics)
+# ---------------------------------------------------------------------------
+def get_telemetry_dataset() -> str:
+    """BigQuery dataset receiving the streamed agent interaction events."""
+    return _first_env("BQ_TELEMETRY_DATASET", "TELEMETRY_DATASET_ID") or "agent_telemetry"
+
+
+def get_telemetry_table() -> str:
+    """Event table inside the telemetry dataset.
+
+    The lab contract fixes this at ``events`` (the ADK plugin default is
+    ``agent_events``), because the operational dashboard notebook and the
+    telemetry Data Agent both bind to ``<dataset>.events``.
+    """
+    return _first_env("BQ_TELEMETRY_TABLE") or "events"
+
+
+def get_telemetry_location() -> str:
+    """BigQuery location of the telemetry dataset (must match the dataset)."""
+    return _first_env("BQ_TELEMETRY_LOCATION") or get_region()
+
+
+def is_telemetry_enabled() -> bool:
+    """Whether interaction events are streamed to BigQuery.
+
+    Enabled by default; set ``BQ_TELEMETRY_ENABLED=0`` to run the agent fully
+    offline (unit tests, air-gapped demos) without a telemetry sink.
+    """
+    raw = _first_env("BQ_TELEMETRY_ENABLED")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}

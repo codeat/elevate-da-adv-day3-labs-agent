@@ -145,7 +145,9 @@ manifest lives in Secret Manager, never on disk in the image.
 | Asset | Location |
 | :--- | :--- |
 | Setup / quality / deploy automation | `Makefile` |
-| Container image | `Dockerfile` (multi-stage, non-root uid 1001, healthcheck) |
+| Container image | `Dockerfile` (`uv sync --frozen`, non-root uid 1001, uvicorn on 8080) |
+| Serving entrypoint | `app/fast_api_app.py` (ADK API + A2A + Console Playground proxy) |
+| Telemetry sink | BigQuery `agent_telemetry.events` + auto-materialized `v_*` views |
 | Infrastructure as Code | `deploy/terraform/` |
 | Continuous integration | `.github/workflows/ci.yaml` |
 | Local guardrails | `.pre-commit-config.yaml` |
@@ -162,3 +164,55 @@ green build:
 2. **Integration layer** — real BigQuery / Data Agent / Cloud Run MCP calls,
    read-only and cost-bounded. Skipped unless `RUN_INTEGRATION_TESTS=1`; in CI
    it runs as a keyless (Workload Identity Federation) `workflow_dispatch` job.
+
+---
+
+## 6. Observability  *(normative)*
+
+### 6.1 Activation contract
+`app/agent.py` MUST export `app = App(..., plugins=build_telemetry_plugins())`.
+ADK's agent loader resolves `app` before `root_agent`
+(`google/adk/cli/utils/agent_loader.py`), and only the `App` form carries a
+plugin chain. Exporting `root_agent` alone produces an agent that runs correctly
+and emits no telemetry — a silent failure, which is why this is normative rather
+than advisory.
+
+### 6.2 Event sink
+| Property | Value | Rationale |
+| :--- | :--- | :--- |
+| Table | `<project>.agent_telemetry.events` | The plugin default is `agent_events`; the operations contract requires `events`, so `BQ_TELEMETRY_TABLE` overrides it explicitly. |
+| Transport | BigQuery Storage Write API (gRPC) | Non-blocking; a turn is never gated on a log write. |
+| Views | `create_views=True`, `view_prefix="v"` | Materializes `v_llm_response`, `v_tool_completed`, … which the telemetry Data Agent and dashboard query instead of re-deriving JSON paths. |
+| Flush | `batch_size=1`, `batch_flush_interval=1.0s`, `flush_on_run_end=True` | Console reflects a turn within ~1s, which matters for live troubleshooting. |
+
+Field names are easy to get wrong from memory: the discriminator is
+**`event_type`** (not `event_name`) and the time column is **`timestamp`** (not
+`event_timestamp`).
+
+### 6.3 Failure posture  *(normative)*
+Observability MUST degrade, never block. `build_telemetry_plugins()` catches
+every construction failure, logs it server-side, and returns `[]`. Rationale: a
+missing optional dependency or a missing `bigquery.dataEditor` grant is an
+operations problem, not a reason to take the operator's agent offline.
+
+---
+
+## 7. Deployment Contract  *(normative)*
+
+Target: **Vertex AI Agent Runtime** (Reasoning Engine), region `us-central1`,
+service account `cymbal-sa-data@<project>`.
+
+| # | Requirement | Failure mode if violated |
+| :-: | :--- | :--- |
+| 1 | `Dockerfile` present at repo root | `agents-cli deploy` aborts before upload. |
+| 2 | `uv.lock` resolved against `https://pypi.org/simple` only | Cloud Build `401 Unauthorized` against the internal mirror. `pyproject.toml` pins `[[tool.uv.index]]` in-project so the workstation's machine-wide default cannot leak in. |
+| 3 | Dependency closure includes `google-adk[mcp]` and `google-adk[bigquery-analytics]` | Container starts, then dies on `No module named 'mcp'`; or starts fine and silently emits no telemetry. |
+| 4 | `load_dotenv()` runs as the first statement of `app/__init__.py` | `app.agent` builds toolsets at module scope; a later `load_dotenv()` is too late and the container crashes on boot. |
+| 5 | Runtime config injected via `--update-env-vars` | `app/.env` is gitignored and excluded by `.gcloudignore`, so it never reaches the image. |
+| 6 | `.gcloudignore` excludes `artifacts/` | Evaluation traces (hundreds of KB, and shaped like customer data) would otherwise be uploaded into the build context. |
+
+### 7.1 Local-vs-cloud parity
+The one deliberate asymmetry: `GOOGLE_CLOUD_LOCATION=global` (the only endpoint
+serving `gemini-3.6-flash`) while `REGION=us-central1` governs Agent Runtime,
+Cloud Run and the BigQuery telemetry dataset. Collapsing these two into a single
+variable yields `404 Publisher model not found`.

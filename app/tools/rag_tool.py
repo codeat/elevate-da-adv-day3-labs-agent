@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 # Matches canonical Cymbal fault codes: ERR-PAY-4001, ERR-DN-PRNT-24V, ...
 ERROR_CODE_PATTERN = re.compile(r"\b[A-Z][A-Z0-9]{1,6}(?:-[A-Z0-9]{1,6}){1,3}\b")
+# AI.EMBED refuses parameterized endpoints, so the value is inlined as a SQL
+# literal. Only model ids and fully-qualified endpoint paths are accepted.
+EMBEDDING_ENDPOINT_PATTERN = re.compile(r"[A-Za-z0-9._\-/]{1,256}")
 
 # SQL-side keyword boost applied on top of the normalized cosine similarity.
 EXACT_CODE_BOOST = 0.15
@@ -42,7 +45,35 @@ def _extract_error_codes(query: str) -> list[str]:
     return ERROR_CODE_PATTERN.findall(query.upper())
 
 
-def _build_vector_sql(full_table: str, has_error_code: bool) -> str:
+def _safe_embedding_endpoint(endpoint: str) -> str:
+    """Validate the embedding endpoint before inlining it as a SQL literal.
+
+    BigQuery requires the ``endpoint`` argument of ``AI.EMBED`` to be a **string
+    literal** -- it cannot be bound as a query parameter (``400 The endpoint
+    argument of ai.embed must be a string literal``). The value therefore has to
+    be interpolated, so it is validated against a strict allowlist first and the
+    call fails closed on anything unexpected.
+
+    Args:
+        endpoint: Model id (``text-embedding-005``) or a fully-qualified
+            ``projects/.../locations/.../endpoints/...`` path, from config.
+
+    Returns:
+        The endpoint, unchanged, once proven safe to inline.
+
+    Raises:
+        ConfigurationError: If the endpoint contains characters that could
+            terminate the literal or inject SQL.
+    """
+    if not EMBEDDING_ENDPOINT_PATTERN.fullmatch(endpoint or ""):
+        raise config.ConfigurationError(
+            "RAG_EMBEDDING_ENDPOINT contains unsupported characters. Expected a "
+            "model id such as 'text-embedding-005' or a fully-qualified endpoint path."
+        )
+    return endpoint
+
+
+def _build_vector_sql(full_table: str, has_error_code: bool, embedding_endpoint: str) -> str:
     """Compose the vector search SQL, injecting keyword boosting when applicable."""
     if has_error_code:
         boost_expr = f"""
@@ -57,9 +88,13 @@ def _build_vector_sql(full_table: str, has_error_code: bool) -> str:
     else:
         boost_expr = "0.0"
 
+    endpoint_literal = _safe_embedding_endpoint(embedding_endpoint)
+
     # S608: `full_table` is a fully-qualified identifier composed exclusively from
     # trusted configuration (never user input); BigQuery identifiers cannot be bound
-    # as query parameters. All user-supplied values travel as ScalarQueryParameters.
+    # as query parameters. `endpoint_literal` is allowlist-validated above because
+    # AI.EMBED rejects parameterized endpoints. All user-supplied values travel as
+    # ScalarQueryParameters.
     return f"""
     WITH matched AS (
       SELECT
@@ -76,7 +111,7 @@ def _build_vector_sql(full_table: str, has_error_code: bool) -> str:
       FROM VECTOR_SEARCH(
         TABLE {full_table},
         'embedding',
-        (SELECT AI.EMBED(@user_query, endpoint => @embedding_endpoint).result AS embedding),
+        (SELECT AI.EMBED(@user_query, endpoint => '{endpoint_literal}').result AS embedding),
         top_k => 10,
         distance_type => 'COSINE'
       )
@@ -167,15 +202,14 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
     error_prefix = "-".join(code_parts[:2]) if len(code_parts) >= 3 else ""
 
     client = bigquery.Client(project=project_id)
-    vector_sql = _build_vector_sql(full_table, bool(primary_code))
+    vector_sql = _build_vector_sql(
+        full_table, bool(primary_code), config.get_rag_embedding_endpoint()
+    )
 
     for attempt in range(1, max_retries + 1):
         try:
             params = [
                 bigquery.ScalarQueryParameter("user_query", "STRING", query),
-                bigquery.ScalarQueryParameter(
-                    "embedding_endpoint", "STRING", config.get_rag_embedding_endpoint()
-                ),
             ]
             if primary_code:
                 params.append(bigquery.ScalarQueryParameter("error_code", "STRING", primary_code))

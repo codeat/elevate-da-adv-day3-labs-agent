@@ -27,7 +27,9 @@ def test_error_code_extraction(query, expected):
 
 # ------------------------------- SQL keyword boosting ----------------------
 def test_vector_sql_injects_keyword_boost_when_error_code_present():
-    sql = rag_tool._build_vector_sql("`p.d.t`", has_error_code=True)
+    sql = rag_tool._build_vector_sql(
+        "`p.d.t`", has_error_code=True, embedding_endpoint="text-embedding-005"
+    )
     assert "@error_code" in sql
     assert "@error_prefix" in sql
     assert "keyword_boost" in sql
@@ -36,13 +38,17 @@ def test_vector_sql_injects_keyword_boost_when_error_code_present():
 
 
 def test_vector_sql_omits_boost_for_plain_language_queries():
-    sql = rag_tool._build_vector_sql("`p.d.t`", has_error_code=False)
+    sql = rag_tool._build_vector_sql(
+        "`p.d.t`", has_error_code=False, embedding_endpoint="text-embedding-005"
+    )
     assert "@error_code" not in sql
     assert "0.0 AS keyword_boost" in sql
 
 
 def test_vector_sql_retains_adjacent_chunk_stitching():
-    sql = rag_tool._build_vector_sql("`p.d.t`", has_error_code=True)
+    sql = rag_tool._build_vector_sql(
+        "`p.d.t`", has_error_code=True, embedding_endpoint="text-embedding-005"
+    )
     assert "BETWEEN (m.chunk_index - 1) AND (m.chunk_index + 1)" in sql
     assert "STRING_AGG(c.chunk_content" in sql
 
@@ -99,3 +105,22 @@ def test_persistent_failure_returns_sanitized_notice(mock_client, _sleep):
     assert "SECRET" not in result
     assert "Diagnostics" not in result
     assert "google.com" not in result
+
+
+def test_vector_sql_inlines_embedding_endpoint_as_literal():
+    """AI.EMBED rejects parameterized endpoints (400 must be a string literal)."""
+    sql = rag_tool._build_vector_sql(
+        "`p.d.t`", has_error_code=False, embedding_endpoint="text-embedding-005"
+    )
+    assert "endpoint => 'text-embedding-005'" in sql
+    assert "@embedding_endpoint" not in sql
+
+
+def test_malicious_embedding_endpoint_is_rejected_before_interpolation():
+    import pytest
+
+    from app import config
+
+    for hostile in ["a' OR '1'='1", "text-embedding-005'); DROP TABLE x--", ""]:
+        with pytest.raises(config.ConfigurationError):
+            rag_tool._build_vector_sql("`p.d.t`", has_error_code=False, embedding_endpoint=hostile)

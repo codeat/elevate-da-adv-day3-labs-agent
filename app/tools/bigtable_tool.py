@@ -55,8 +55,23 @@ def get_bigtable_mcp_toolset() -> McpToolset:
     """Instantiate the ADK ``McpToolset`` bound to the Cloud Run Bigtable microservice.
 
     Returns:
-        A configured :class:`McpToolset` exposing the ``get_cashier_realtime_metrics``
-        Bigtable GoogleSQL tool declared in ``tools.yaml``.
+        A configured :class:`McpToolset` exposing the Bigtable GoogleSQL tools
+        declared in ``tools.yaml``: ``read_cashier_realtime_alerts_sql`` and
+        ``read_pos_transactions_enriched_sql``.
+
+    Note:
+        The tool identifiers are owned by ``tools.yaml`` and materialise only
+        when that manifest is published to Secret Manager and the Cloud Run
+        revision is rolled (``make mcp-deploy``). Editing ``tools.yaml`` alone
+        leaves the previous revision serving the previous names, and the agent
+        then silently degrades: it cannot find the tool the system instruction
+        promises and falls back to whatever gateway is left. Verify with::
+
+            curl -X POST -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+                 -H "Content-Type: application/json" \
+                 -H "Accept: application/json, text/event-stream" \
+                 -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+                 "$BIGTABLE_MCP_URL/mcp"
 
     Raises:
         app.config.ConfigurationError: If ``BIGTABLE_MCP_URL`` is not configured.

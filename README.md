@@ -30,7 +30,11 @@ flowchart LR
 | `tools.yaml` | MCP Toolbox manifest (templated — no tenant identifiers committed). |
 | `tests/unit/` | Hermetic offline pytest suite (portability, contract, logic, wiring gates). |
 | `tests/integration/` | Online contract tests against live GCP backends (opt-in via `RUN_INTEGRATION_TESTS=1`). |
-| `tests/eval/` | ADK evaluation datasets, metric config, and evaluation report. |
+| `app/fast_api_app.py` | Container entrypoint: ADK API routes + A2A + the Console Playground proxy. |
+| `app/app_utils/` | Session/artifact services, A2A wiring, reasoning-engine adapter. |
+| `tests/eval/` | Evaluation datasets, metric config, custom metrics, and the evaluation report. |
+| `tests/eval/metrics/` | Deterministic zero-token guardrail metrics (`evaluate(instance)` contract). |
+| `uv.lock` | Pinned dependency closure, resolved against **public PyPI** (see Deployment). |
 | `deploy/terraform/` | Infrastructure-as-Code: APIs, IAM, Secret Manager, Cloud Run. |
 | `Makefile` / `Dockerfile` | Reproducible setup, quality gates, container, and deployment. |
 
@@ -104,11 +108,11 @@ Two deliberately separated layers:
 
 | Layer | Command | Credentials | Runs in CI |
 | :--- | :--- | :--- | :--- |
-| Hermetic unit tests (35) | `make test` | none — sockets and ADC are mocked at import time | every push / PR |
+| Hermetic unit tests (61) | `make test` | none — sockets and ADC are mocked at import time | every push / PR |
 | Online contract tests | `make test-integration` | ADC + a provisioned project | `workflow_dispatch` job via keyless WIF |
 
 ```bash
-make test              # 35 hermetic unit tests, no cloud credentials required
+make test              # 61 hermetic unit tests, no cloud credentials required
 make test-integration  # live BigQuery / Data Agent / MCP Toolbox contract tests
 make eval              # ADK golden-dataset evaluation (requires a live project)
 make lint              # ruff lint + format check
@@ -123,3 +127,88 @@ contract, Data Agent resource reachability, and the MCP Toolbox tool manifest.
 CI (`.github/workflows/ci.yaml`) additionally runs `terraform fmt/validate` and
 a full container build on every pull request. Install the local guardrails with
 `pre-commit install`.
+
+
+---
+
+## Observability — BigQuery Agent Analytics
+
+`app/agent.py` exports an `App` carrying `BigQueryAgentAnalyticsPlugin`. ADK's
+agent loader resolves `app` **before** `root_agent`, and that is what actually
+activates the plugin chain — exporting only `root_agent` yields an agent that
+runs perfectly and logs nothing.
+
+Every prompt, LLM response, tool invocation (arguments + latency), token count
+and error is streamed to `<project>.agent_telemetry.events` over the BigQuery
+Storage Write API (gRPC), asynchronously, without blocking a turn. The plugin
+also materializes the `v_*` analysis views (`v_llm_response`, `v_tool_completed`,
+…) that the telemetry Data Agent and the dashboard notebook query.
+
+| Setting | Env var | Default | Note |
+| :--- | :--- | :--- | :--- |
+| Dataset | `BQ_TELEMETRY_DATASET` | `agent_telemetry` | |
+| Table | `BQ_TELEMETRY_TABLE` | `events` | **Overrides the plugin default `agent_events`.** |
+| Location | `BQ_TELEMETRY_LOCATION` | `$REGION` | Must match the dataset's region. |
+| Kill switch | `BQ_TELEMETRY_ENABLED` | `1` | |
+
+**Failure posture:** observability must never take the agent down. If the plugin
+cannot be constructed — missing optional dependency, no telemetry IAM —
+`build_telemetry_plugins()` logs the cause server-side and returns `[]`. The
+agent starts without telemetry rather than not at all.
+
+Telemetry is also a debugging instrument, not just a dashboard feed. When a
+system-instruction change appeared to have no effect (nine eval responses came
+back byte-identical), querying `LLM_REQUEST` rows confirmed the new text *was*
+in the prompt — which redirected the fix from "why isn't it loading" to "why
+isn't the model complying".
+
+```sql
+SELECT FORMAT_TIMESTAMP('%H:%M:%S', timestamp) AS ts,
+       REGEXP_CONTAINS(TO_JSON_STRING(t), 'RULE ZERO') AS has_rule_zero
+FROM `<project>.agent_telemetry.events` t
+WHERE event_type = 'LLM_REQUEST'
+ORDER BY timestamp DESC LIMIT 10;
+```
+
+---
+
+## Deployment — Vertex AI Agent Runtime
+
+```bash
+agents-cli deploy \
+  --deployment-target agent_runtime \
+  --project "$PROJECT_ID" --region us-central1 \
+  --service-name cymbal_operations_agent \
+  --service-account "cymbal-sa-data@$PROJECT_ID.iam.gserviceaccount.com" \
+  --update-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,..."
+```
+
+Four things this repository had to get right before the build would succeed:
+
+1. **A `Dockerfile` is mandatory.** Agent Runtime uploads the source tree and
+   builds it; `agents-cli deploy` refuses to start without one. The image runs
+   `uvicorn app.fast_api_app:app` on 8080 as a non-root uid.
+2. **The lockfile must resolve against public PyPI.** A Google workstation ships
+   a machine-wide `~/.config/uv/uv.toml` whose default index is the internal
+   Artifact Foundry mirror. Cloud Build cannot authenticate to it, so an
+   inherited index fails the build with `401 Unauthorized`. `pyproject.toml`
+   therefore pins `[[tool.uv.index]] url = "https://pypi.org/simple"` in-project.
+   Regenerate with `uv lock` and verify:
+   ```bash
+   grep -o 'registry = "[^"]*"' uv.lock | sort -u   # must print only pypi.org/simple
+   ```
+3. **The dependency closure must be complete.** `uv sync --frozen` installs
+   exactly what `pyproject.toml` declares. Two extras are easy to miss and both
+   fail at container *start*, not build: `google-adk[mcp]` (without it the
+   Bigtable gateway dies with `No module named 'mcp'`) and
+   `google-adk[bigquery-analytics]` (without it telemetry silently disappears).
+4. **Configuration must load before the package body runs.** `app/agent.py`
+   builds its toolsets at module scope, so `app/__init__.py` calls
+   `load_dotenv(Path(__file__).with_name(".env"))` as its first statement.
+   `fast_api_app` also calls `load_dotenv()`, but that executes *after* the
+   package `__init__` — too late, and the container would crash on boot with
+   `ConfigurationError: BIGTABLE_MCP_URL is not configured`. Real environment
+   variables always win, so `--update-env-vars` remains authoritative in cloud.
+
+`app/.env` is gitignored and excluded from the source upload by `.gcloudignore`;
+it is a local-development convenience only.

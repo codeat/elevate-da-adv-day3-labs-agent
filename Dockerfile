@@ -1,39 +1,53 @@
 # syntax=docker/dockerfile:1.7
 # ---------------------------------------------------------------------------
-# Cymbal Retail Operations Coordinator Agent
-# Multi-stage, non-root, distro-slim container image.
-# All runtime configuration arrives via environment variables (12-factor).
+# Cymbal Retail Operations Coordinator Agent - Vertex AI Agent Runtime image.
+#
+# The build contract is dictated by Agent Runtime (Reasoning Engine): it uploads
+# the source tree, builds THIS Dockerfile, and expects an HTTP server on $PORT
+# serving the native ADK reasoning_engine contract. `app/fast_api_app.py`
+# provides that surface (adk_api routes + A2A + the Console Playground proxy).
+#
+# Dependency resolution is pinned through uv.lock, which is generated against
+# the PUBLIC PyPI index. Cloud Build has no line of sight to an internal
+# Artifact Registry, so a lockfile carrying internal registry URLs fails the
+# build with an opaque 401 - see README "Deployment" for the regeneration
+# command.
+#
+# Runtime configuration is injected as real environment variables by
+# `agents-cli deploy --update-env-vars`; nothing environment-specific is baked
+# into the image (12-factor).
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim
 
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-WORKDIR /build
-COPY requirements.txt ./
-RUN python -m venv /opt/venv \
- && /opt/venv/bin/pip install --upgrade pip \
- && /opt/venv/bin/pip install -r requirements.txt
-
-# ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+# Pinned so an upstream uv release cannot silently change resolution behaviour
+# between a green local build and a red Cloud Build.
+RUN pip install --no-cache-dir uv==0.8.13
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/opt/venv/bin:$PATH"
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
-RUN useradd --create-home --uid 1001 agent
-COPY --from=builder /opt/venv /opt/venv
+WORKDIR /code
 
-WORKDIR /app
-COPY --chown=agent:agent app/ ./app/
-COPY --chown=agent:agent tools.yaml ./tools.yaml
+# Copy the resolution inputs first so the dependency layer stays cached across
+# application-code edits.
+COPY ./pyproject.toml ./README.md ./uv.lock* ./
+COPY ./app ./app
 
+# --frozen: fail loudly if uv.lock has drifted from pyproject.toml rather than
+# silently resolving something different from what was tested locally.
+RUN uv sync --frozen --no-dev
+
+ARG AGENT_VERSION=0.0.0
+ENV AGENT_VERSION=${AGENT_VERSION}
+
+# Drop privileges. The container writes nothing outside /tmp at runtime; ADK
+# session and artifact state live in managed services, not on local disk.
+RUN useradd --create-home --uid 1001 agent && chown -R agent:agent /code
 USER agent
-EXPOSE 8000
 
-# Fail fast when mandatory environment properties are absent.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/list-apps',timeout=4)" || exit 1
+# Agent Runtime and Cloud Run both address the container on 8080.
+EXPOSE 8080
 
-CMD ["adk", "web", "--host", "0.0.0.0", "--port", "8000", "."]
+CMD ["uv", "run", "--no-sync", "uvicorn", "app.fast_api_app:app", "--host", "0.0.0.0", "--port", "8080"]

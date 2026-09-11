@@ -1,0 +1,84 @@
+# =============================================================================
+# Cymbal Retail Operations Agent - Evaluation Configuration (MULTI-TURN)
+# =============================================================================
+# Pair with: datasets/eval-data2.json   (3 two-turn conversations)
+# Invoke   : agents-cli eval run --dataset tests/eval/datasets/eval-data2.json \
+#                                --config  tests/eval/eval_config.multiturn.yaml
+#
+# WHY A SEPARATE CONFIG
+#   The Vertex eval service hard-fails a single-turn metric that is handed a
+#   trace with more than one turn:
+#     400 INVALID_ARGUMENT: "Single-turn metric 'tool_use_quality_v1' received
+#     agent_eval_data with 2 turns. Use a multi-turn metric for multi-turn
+#     conversations."
+#   The multi_turn_* family is the sanctioned instrument and, unlike its
+#   single-turn counterpart, it scores the conversation as a trajectory -
+#   exactly the property these cases exist to protect (entity carry-over across
+#   gateways, hard intent switches, sequential federated audits).
+#
+# METRIC SELECTION
+#   multi_turn_tool_use_quality_v1 -> Was the right gateway chosen on EVERY turn,
+#     and were turn-2 arguments correctly resolved from turn-1 context (e.g.
+#     "that cashier" -> the concrete cashier_id returned earlier)?
+#   multi_turn_trajectory_quality_v1 -> The shape of the whole conversation:
+#     did the sequence of gateway hops make sense end to end, was the entity
+#     established in turn 1 carried into turn 2, and was anything re-fetched or
+#     re-asked that was already known?
+#
+#   multi_turn_general_quality_v1 was tried first and REMOVED. Despite the name
+#   and its membership in SUPPORTED_PREDEFINED_METRICS, the Vertex eval service
+#   routes it through the single-turn code path and rejects every multi-turn
+#   case it is given:
+#     400 INVALID_ARGUMENT: "Single-turn metric 'multi_turn_general_quality_v1'
+#     received agent_eval_data with 2 turns."
+#   3/3 cases errored. Keeping it would have contributed nothing but a red line
+#   in every report.
+#
+# DATASET PRECONDITION - the canned prior turn must carry its tool events.
+#   These judges generate a routing rubric for EVERY turn in the conversation,
+#   including the scripted history turn the harness never re-runs. A history
+#   turn holding only `user text -> model text` therefore fails its own rubric
+#   by construction ("the agent calls pos_troubleshooting_rag_tool" -> no such
+#   call exists), and the agent is penalised for a trajectory it was never
+#   asked to produce. Measured cost of the omission: mt_03 scored 0.000 and the
+#   suite mean sat at 0.333. eval-data2.json now ships the function_call /
+#   function_response pair inside turn 0 for all three cases.
+#
+#   grounding_v1 is deliberately absent: it is a single-turn metric with no
+#   multi-turn counterpart in SUPPORTED_PREDEFINED_METRICS. Attribution
+#   fidelity is instead covered on the single-turn core suite, where each
+#   answer maps to one retrieval, and by RULE ZERO in the system instruction.
+#
+#   The four deterministic guardrail metrics are carried here unchanged. They
+#   are shape-agnostic (they read the final response text and the tool-call
+#   trace), cost zero tokens, and keep the contractual invariants enforced on
+#   conversational traffic as well.
+# =============================================================================
+
+metrics_to_run:
+  # --- Managed Vertex AI judges (billed, semantic, multi-turn aware) --------
+  - multi_turn_tool_use_quality_v1 # Per-turn routing + cross-turn argument resolution.
+  - multi_turn_trajectory_quality_v1 # End-to-end hop sequence, entity carry-over, no re-fetching.
+
+  # --- Deterministic local guardrails (free, exact, shape-agnostic) ---------
+  - decline_contract_compliance
+  - pii_leakage_absent
+  - clarification_before_unbounded_scan
+  - read_only_posture_upheld
+
+custom_metrics:
+  - name: decline_contract_compliance
+    execution: local
+    custom_function_file: metrics/decline_contract_compliance.py
+
+  - name: pii_leakage_absent
+    execution: local
+    custom_function_file: metrics/pii_leakage_absent.py
+
+  - name: clarification_before_unbounded_scan
+    execution: local
+    custom_function_file: metrics/clarification_before_unbounded_scan.py
+
+  - name: read_only_posture_upheld
+    execution: local
+    custom_function_file: metrics/read_only_posture_upheld.py

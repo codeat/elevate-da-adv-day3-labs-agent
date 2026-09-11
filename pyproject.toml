@@ -1,8 +1,85 @@
 [project]
 name = "cymbal-operations-agent"
-version = "1.2.0"
+version = "1.3.0"
 description = "Cymbal Retail Operations & Analytics Coordinator Agent (ADK hub-and-spoke)"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
+
+# Runtime closure for the Vertex AI Agent Runtime container build.
+#
+# The Agent Runtime image is built from ./Dockerfile, which runs `uv sync
+# --frozen` against uv.lock. Anything the agent imports at runtime therefore has
+# to be declared here -- an incomplete closure fails at container start, not at
+# build time, which is a much worse place to find out.
+dependencies = [
+    # --- ADK core + the serving stack the scaffolded FastAPI app needs -------
+    # Extras, and why each one is load-bearing here:
+    #   gcp                -> BigQuery / Bigtable clients + the GCP OTel exporters
+    #   otel-gcp           -> genai/grpc/httpx auto-instrumentation
+    #   mcp                -> McpToolset; WITHOUT this the Bigtable gateway dies at
+    #                         import with `ModuleNotFoundError: No module named 'mcp'`
+    #   bigquery-analytics -> bigquery-storage + pyarrow + cloud-storage, the
+    #                         optional trio BigQueryAgentAnalyticsPlugin needs
+    "google-adk[gcp,otel-gcp,mcp,bigquery-analytics]>=2.6.0,<3.0.0",
+    "a2a-sdk[http-server]>=1.0,<2",
+    "google-cloud-aiplatform[evaluation,agent-engines]>=1.156.0,<2.0.0",
+    "google-cloud-logging>=3.12.0,<4.0.0",
+    "gcsfs>=2024.11.0",
+    # google-genai calls aiohttp.StreamReader.readline(max_line_length=...),
+    # which only exists from 3.13.4; ADK under-declares the floor.
+    "aiohttp>=3.13.4",
+    # 1.13.0 is yanked ("breaks imports"); pin to the last good prerelease.
+    "opentelemetry-resourcedetector-gcp<=1.12.0a0",
+    # Agent Runtime images are still on the protobuf 6.x ABI.
+    "protobuf>=6.31.1,<7.0.0",
+
+    # --- The three analytical gateways this agent actually talks to ---------
+    "google-cloud-bigquery>=3.25.0",
+    "google-cloud-bigtable>=2.26.0",
+    "google-auth>=2.35.0",
+    "requests>=2.32.0",
+    "python-dotenv>=1.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+    "google-agents-cli>=1.5.0",
+]
+
+[project.optional-dependencies]
+eval = [
+    "google-adk[eval]>=2.6.0,<3.0.0",
+    "google-cloud-aiplatform[evaluation]>=1.156.0,<2.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# ---------------------------------------------------------------------------
+# uv resolution policy
+# ---------------------------------------------------------------------------
+# PIN THE INDEX IN-PROJECT. A Google workstation ships a machine-wide
+# ~/.config/uv/uv.toml whose default index is the internal Artifact Foundry
+# mirror. Cloud Build has no credentials for that host, so any lockfile or
+# `uv run` that inherits it fails with `401 Unauthorized` -- and, because the
+# mirror carries a different a2a-sdk release window, it also produces a bogus
+# "requirements are unsatisfiable" for a2a-sdk>=1.0,<2. Declaring the public
+# index here makes resolution identical on the workstation and in Cloud Build.
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[tool.uv]
+# The deployment target is a linux container. Resolving Windows/emscripten
+# splits buys nothing and drags unrelated platform-only conflicts into the
+# lockfile.
+environments = ["sys_platform == 'linux'"]
 
 [tool.pytest.ini_options]
 # Only the hermetic unit layer runs by default. The online layer is invoked
@@ -29,3 +106,8 @@ ignore = ["E501", "S101", "S603", "S607"]
 # that is composed from trusted configuration. BigQuery cannot bind identifiers as
 # query parameters, and every user-supplied value travels as a ScalarQueryParameter.
 "app/tools/rag_tool.py" = ["S608"]
+# S104 (bind to 0.0.0.0): the scaffolded uvicorn entrypoint MUST listen on all
+# interfaces -- Vertex AI Agent Runtime and Cloud Run route traffic to the
+# container's external interface, and binding to 127.0.0.1 makes the service
+# unreachable. Network exposure is governed by the platform, not the bind host.
+"app/fast_api_app.py" = ["S104"]

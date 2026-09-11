@@ -58,34 +58,44 @@ tools:
     kind: bigtable-sql
     source: bigtable-source
     description: |
-      Query enriched real-time POS checkout transactions streamed into Cloud Bigtable, including line item totals, applied discounts, promo codes, manual override flags, tender type, and the Vertex AI anomaly inference verdict.
-      Accepts a row key prefix such as 'STORE_048#CASH_1190' (all recent transactions for a cashier), 'STORE_048#' (all recent transactions for a store), or a full transaction key, plus a row limit.
+      Query enriched real-time POS checkout transactions streamed into Cloud Bigtable, including line item totals, applied discounts, promo codes, manual discount flags, tender type, payment network, and the Vertex AI order-anomaly inference verdict.
+      The row key is 'STORE_<id>#TXN-<transaction id>', so `prefix` selects a STORE (e.g. 'STORE_048#') or one exact transaction key. It cannot select a cashier: use `prefix='STORE_048#'` together with `cashier_id='CASH_1190'` to drill into one cashier's checkouts. Pass cashier_id='' to return the whole store.
       Use this to inspect the individual transactions behind an elevated override rate or promo abuse alert, and to reconcile live checkout activity against the BigQuery gold ledger.
     statement: |
       SELECT
         CAST(_key AS STRING) as row_key,
-        CAST(txn['transaction_id'] AS STRING) as transaction_id,
-        CAST(txn['store_id'] AS STRING) as store_id,
-        CAST(txn['cashier_id'] AS STRING) as cashier_id,
-        CAST(txn['event_ts'] AS STRING) as event_ts,
-        CAST(txn['tender_type'] AS STRING) as tender_type,
-        CAST(txn['promo_code'] AS STRING) as promo_code,
-        TO_INT64(txn['item_count']) as item_count,
-        TO_FLOAT64(txn['gross_amount_usd']) as gross_amount_usd,
-        TO_FLOAT64(txn['discount_amount_usd']) as discount_amount_usd,
-        TO_FLOAT64(txn['net_amount_usd']) as net_amount_usd,
-        TO_FLOAT64(txn['discount_pct']) as discount_pct,
-        CAST(flags['manual_override'] AS STRING) as manual_override,
-        CAST(flags['anomaly_verdict'] AS STRING) as anomaly_verdict,
-        TO_FLOAT64(flags['anomaly_score']) as anomaly_score
+        CAST(tx['transaction_id'] AS STRING) as transaction_id,
+        CAST(tx['store_id'] AS STRING) as store_id,
+        CAST(tx['cashier_id'] AS STRING) as cashier_id,
+        CAST(tx['pos_terminal_id'] AS STRING) as pos_terminal_id,
+        CAST(tx['business_date'] AS STRING) as business_date,
+        CAST(tx['event_timestamp'] AS STRING) as event_timestamp,
+        CAST(tx['payment_method'] AS STRING) as payment_method,
+        CAST(tx['payment_network'] AS STRING) as payment_network,
+        CAST(tx['promo_code_applied'] AS STRING) as promo_code_applied,
+        CAST(tx['manual_discount_flag'] AS STRING) as manual_discount_flag,
+        SAFE_CAST(CAST(tx['item_count'] AS STRING) AS INT64) as item_count,
+        SAFE_CAST(CAST(tx['subtotal_amount'] AS STRING) AS FLOAT64) as subtotal_amount_usd,
+        SAFE_CAST(CAST(tx['discount'] AS STRING) AS FLOAT64) as discount_amount_usd,
+        SAFE_CAST(CAST(tx['tax_amount'] AS STRING) AS FLOAT64) as tax_amount_usd,
+        SAFE_CAST(CAST(tx['total'] AS STRING) AS FLOAT64) as total_amount_usd,
+        CAST(alerts['is_order_anomaly'] AS STRING) as is_order_anomaly,
+        CAST(alerts['order_anomaly_alert_id'] AS STRING) as anomaly_alert_id,
+        CAST(alerts['order_anomaly_alert_source'] AS STRING) as anomaly_alert_source,
+        CAST(alerts['order_anomaly_alert_ts'] AS STRING) as anomaly_alert_ts,
+        SAFE_CAST(CAST(alerts['order_anomaly_risk_score'] AS STRING) AS FLOAT64) as anomaly_risk_score
       FROM pos_transactions_enriched
       WHERE CAST(_key AS STRING) LIKE CONCAT(@prefix, '%')
+        AND (@cashier_id = '' OR CAST(tx['cashier_id'] AS STRING) = @cashier_id)
       ORDER BY _key DESC
       LIMIT @row_limit;
     parameters:
       - name: prefix
         type: string
-        description: "Row key prefix, e.g. 'STORE_048#CASH_1190' for a cashier or 'STORE_048#' for a whole store"
+        description: "Row key prefix. Store scope 'STORE_048#', or one exact key 'STORE_048#TXN-20260910-0002205'. A cashier id is NOT part of the row key."
+      - name: cashier_id
+        type: string
+        description: "Optional cashier filter applied to tx['cashier_id'], e.g. 'CASH_1190'. Pass an empty string to return every cashier in the prefix."
       - name: row_limit
         type: integer
         description: "Maximum number of transactions to return (recommended 10-50)"

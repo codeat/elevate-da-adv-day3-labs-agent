@@ -16,3 +16,9 @@ deploy/terraform/*.tfstate
 deploy/terraform/*.tfstate.*
 deploy/terraform/.terraform.lock.hcl
 *.tfvars
+
+# Evaluation traces / grade results produced by `make eval`.
+artifacts/
+
+# agents-cli local state.
+.google-agents-cli/

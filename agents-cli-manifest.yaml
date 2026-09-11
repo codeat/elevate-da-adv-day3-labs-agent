@@ -1,0 +1,23 @@
+# agents-cli project manifest.
+#
+# Declares the project shape so `agents-cli eval`, `agents-cli deploy`, and
+# `agents-cli publish` can locate the agent package and pick the right
+# deployment surface. Environment-specific values (project id, endpoints) are
+# NOT declared here -- they stay in app/.env and app/config.py so the same
+# manifest promotes unchanged across dev / staging / prod.
+name: cymbal_operations_agent
+agent_directory: app
+base_template: adk
+language: python
+
+# Vertex AI Agent Runtime (Reasoning Engine) is a regional service; the model
+# itself is served from the `global` endpoint (see GOOGLE_CLOUD_LOCATION in
+# app/.env).
+region: us-central1
+
+create_params:
+  deployment_target: agent_runtime
+  is_a2a: false
+  session_type: none
+  cicd_runner: skip
+  agent_gateway: false
